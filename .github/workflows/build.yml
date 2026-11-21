@@ -9,224 +9,75 @@ jobs:
       - uses: actions/checkout@v4
       - name: Create project files
         run: |
-          mkdir -p $(dirname settings.gradle.kts)
-          cat > settings.gradle.kts <<'EOF_0'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositories { google(); mavenCentral() }
-          }
-          rootProject.name = "xheaac"
-          include(":app")
-          EOF_0
-          mkdir -p $(dirname build.gradle.kts)
-          cat > build.gradle.kts <<'EOF_1'
-          plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
-          }
-          EOF_1
-          mkdir -p $(dirname gradle.properties)
-          cat > gradle.properties <<'EOF_2'
-          org.gradle.jvmargs=-Xmx2g
-          EOF_2
-          mkdir -p $(dirname app/build.gradle.kts)
-          cat > app/build.gradle.kts <<'EOF_3'
-          plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
-          }
-          android {
-              namespace = "com.example.xheaac"
-              compileSdk = 34
-              defaultConfig {
-                  applicationId = "com.example.xheaac"
-                  minSdk = 28
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
-                  ndk { abiFilters += listOf("arm64-v8a") }
-              }
-              packaging { jniLibs { useLegacyPackaging = true } }
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions { jvmTarget = "17" }
-          }
-          EOF_3
-          mkdir -p $(dirname app/src/main/AndroidManifest.xml)
-          cat > app/src/main/AndroidManifest.xml <<'EOF_4'
-          
-<?xml version="1.0" encoding="utf-8"?>
-<manifest
-    xmlns:android="http://schemas.android.com/apk/res/android">
-    <application
-                  android:label="xHE-AAC Encoder"
-                  android:extractNativeLibs="true"
-                  android:theme="@android:style/Theme.DeviceDefault.Light">
-        <activity android:name=".MainActivity" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
-</manifest>
-          EOF_4
-          mkdir -p $(dirname app/src/main/java/com/example/xheaac/MainActivity.kt)
-          cat > app/src/main/java/com/example/xheaac/MainActivity.kt <<'EOF_5'
-          package com.example.xheaac
-
-          import android.app.Activity
-          import android.content.Intent
-          import android.media.MediaCodec
-          import android.media.MediaExtractor
-          import android.media.MediaFormat
-          import android.media.MediaPlayer
-          import android.net.Uri
-          import android.os.Bundle
-          import android.text.InputType
-          import android.widget.*
-          import java.io.File
-          import java.io.RandomAccessFile
-          import java.nio.ByteBuffer
-          import java.nio.ByteOrder
-          import kotlin.concurrent.thread
-
-          class MainActivity : Activity() {
-              private var picked: Uri? = null
-              private var outFile: File? = null
-              private var player: MediaPlayer? = null
-              private lateinit var logView: TextView
-              private lateinit var bitrate: EditText
-
-              // آرگومان‌های انکودر libxaac؛ اگر خطا داد، اینجا را اصلاح کنید
-              private fun encoderArgs(bin: String, wav: File, out: File, bps: Int) = listOf(
-                  bin, "-ifile:${wav.absolutePath}", "-ofile:${out.absolutePath}",
-                  "-codec:3", "-br:$bps", "-mp4:1"
-              )
-
-              override fun onCreate(b: Bundle?) {
-                  super.onCreate(b)
-                  val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 48, 32, 32) }
-                  val pick = Button(this).apply { text = "انتخاب آهنگ" }
-                  bitrate = EditText(this).apply {
-                      hint = "بیت‌ریت (kbps) - حداقل 6"; setText("12")
-                      inputType = InputType.TYPE_CLASS_NUMBER
-                  }
-                  val enc = Button(this).apply { text = "فشرده‌سازی با xHE-AAC" }
-                  val play = Button(this).apply { text = "پخش خروجی" }
-                  logView = TextView(this)
-                  root.addView(pick); root.addView(bitrate); root.addView(enc); root.addView(play)
-                  root.addView(ScrollView(this).apply { addView(logView) })
-                  setContentView(root)
-
-                  pick.setOnClickListener {
-                      startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                          addCategory(Intent.CATEGORY_OPENABLE); type = "audio/*"
-                      }, 1)
-                  }
-                  enc.setOnClickListener { encode() }
-                  play.setOnClickListener {
-                      val f = outFile
-                      if (f == null || !f.exists()) { log("هنوز خروجی‌ای نیست"); return@setOnClickListener }
-                      player?.release()
-                      player = MediaPlayer().apply { setDataSource(f.absolutePath); prepare(); start() }
-                  }
-              }
-
-              @Deprecated("Deprecated")
-              override fun onActivityResult(req: Int, res: Int, data: Intent?) {
-                  super.onActivityResult(req, res, data)
-                  if (req == 1 && res == RESULT_OK) { picked = data?.data; log("انتخاب شد: $picked") }
-              }
-
-              private fun log(s: String) = runOnUiThread { logView.append(s + "\n") }
-
-              private fun encode() {
-                  val uri = picked ?: run { log("اول آهنگ را انتخاب کنید"); return }
-                  val kbps = bitrate.text.toString().toIntOrNull() ?: 12
-                  if (kbps < 6) { log("بیت‌ریت باید حداقل 6 باشد"); return }
-                  thread {
-                      try {
-                          val wav = File(cacheDir, "in.wav")
-                          val out = File(getExternalFilesDir(null), "output.m4a").also { it.delete() }
-                          log("در حال دیکود...")
-                          decodeToWav(uri, wav)
-                          val bin = applicationInfo.nativeLibraryDir + "/libxaacenc.so"
-                          log("در حال انکود (${kbps} kbps)...")
-                          val code = run(encoderArgs(bin, wav, out, kbps * 1000))
-                          if (code != 0 || !out.exists()) {
-                              log("خطا (کد $code). راهنمای انکودر:")
-                              run(listOf(bin))
-                          } else {
-                              outFile = out
-                              log("تمام شد: ${out.absolutePath}\nحجم: ${out.length() / 1024.0} KB")
-                          }
-                      } catch (e: Exception) { log("خطا: $e") }
-                  }
-              }
-
-              private fun run(cmd: List
-<String>): Int {
-                  val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
-                  p.inputStream.bufferedReader().forEachLine { log(it) }
-                  return p.waitFor()
-              }
-
-              private fun decodeToWav(uri: Uri, out: File) {
-                  val ex = MediaExtractor().apply { setDataSource(this@MainActivity, uri, null) }
-                  var idx = -1; var fmt: MediaFormat? = null
-                  for (i in 0 until ex.trackCount) {
-                      val f = ex.getTrackFormat(i)
-                      if (f.getString(MediaFormat.KEY_MIME)!!.startsWith("audio/")) { idx = i; fmt = f; break }
-                  }
-                  require(idx >= 0 && fmt != null) { "ترک صوتی پیدا نشد" }
-                  ex.selectTrack(idx)
-                  val codec = MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME)!!)
-                  codec.configure(fmt, null, null, 0); codec.start()
-                  var rate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                  var ch = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                  val raf = RandomAccessFile(out, "rw"); raf.setLength(0); raf.write(ByteArray(44))
-                  val info = MediaCodec.BufferInfo()
-                  var inDone = false; var outDone = false; var total = 0L
-                  while (!outDone) {
-                      if (!inDone) {
-                          val i = codec.dequeueInputBuffer(10000)
-                          if (i >= 0) {
-                              val buf = codec.getInputBuffer(i)!!
-                              val n = ex.readSampleData(buf, 0)
-                              if (n < 0) { codec.queueInputBuffer(i, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inDone = true }
-                              else { codec.queueInputBuffer(i, 0, n, ex.sampleTime, 0); ex.advance() }
-                          }
-                      }
-                      val o = codec.dequeueOutputBuffer(info, 10000)
-                      if (o >= 0) {
-                          val buf = codec.getOutputBuffer(o)!!
-                          val arr = ByteArray(info.size)
-                          buf.position(info.offset); buf.get(arr)
-                          raf.write(arr); total += info.size
-                          codec.releaseOutputBuffer(o, false)
-                          if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outDone = true
-                      } else if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                          val nf = codec.outputFormat
-                          rate = nf.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                          ch = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                      }
-                  }
-                  codec.stop(); codec.release(); ex.release()
-                  val h = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
-                  h.put("RIFF".toByteArray()).putInt((36 + total).toInt()).put("WAVEfmt ".toByteArray())
-                  h.putInt(16).putShort(1).putShort(ch.toShort()).putInt(rate).putInt(rate * ch * 2)
-                  h.putShort((ch * 2).toShort()).putShort(16).put("data".toByteArray()).putInt(total.toInt())
-                  raf.seek(0); raf.write(h.array()); raf.close()
-                  log("WAV: ${rate}Hz, ${ch}ch")
-              }
-          }
-          EOF_5
-
+          cat > /tmp/b64.txt <<'END_B64'
+          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
+          END_B64
+          base64 -d /tmp/b64.txt | tar xz -C "$GITHUB_WORKSPACE"
+          ls -R app | head -30
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -234,15 +85,15 @@ jobs:
       - name: Build libxaac encoder (arm64)
         run: |
           git clone --depth 1 https://github.com/ittiam-systems/libxaac.git /tmp/libxaac
-          mkdir /tmp/libxaac/build && cd /tmp/libxaac/build
-          cmake .. -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release
+          mkdir /tmp/libxaac/build
+          cd /tmp/libxaac/build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 -DCMAKE_BUILD_TYPE=Release
           cmake --build . -j$(nproc)
           ENC=$(find . -type f -name xaacenc | head -1)
           echo "Encoder binary: $ENC"
           file "$ENC"
-          mkdir -p $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a
-          cp "$ENC" $GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libxaacenc.so
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a"
+          cp "$ENC" "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libxaacenc.so"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
